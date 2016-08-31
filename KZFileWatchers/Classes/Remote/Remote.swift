@@ -7,38 +7,40 @@
 //
 import Foundation
 
+// not supported temporarily, Swift 2.2 converted to Swift 3.0
+
 public extension FileWatcher {
     
     /**
      Watcher for remote files, it supports both ETag and Last-Modified HTTP header tags.
      */
     public final class Remote: FileWatcherProtocol {
-        private enum State {
-            case started(sessionHandler: URLSessionHandler, timer: NSTimer)
+        fileprivate enum State {
+            case started(sessionHandler: URLSessionHandler, timer: Timer)
             case stopped
         }
         
-        private struct Constants {
+        fileprivate struct Constants {
             static let IfModifiedSinceKey = "If-Modified-Since"
             static let LastModifiedKey = "Last-Modified"
             static let IfNoneMatchKey = "If-None-Match"
             static let ETagKey = "Etag"
         }
         
-        internal static var sessionConfiguration: NSURLSessionConfiguration = {
-            let config = NSURLSessionConfiguration.defaultSessionConfiguration()
-            config.requestCachePolicy = .ReloadIgnoringLocalAndRemoteCacheData
+        internal static var sessionConfiguration: URLSessionConfiguration = {
+            let config = URLSessionConfiguration.default
+            config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
             return config
         }()
         
         
         /// URL that this watcher is observing.
-        let url: NSURL
+        let url: URL
         
         /// The minimal amount of time between querying the `url` again.
-        let refreshInterval: NSTimeInterval
+        let refreshInterval: TimeInterval
         
-        private var state: State = .stopped
+        fileprivate var state: State = .stopped
         
         /**
          Creates a new watcher using given URL and refreshInterval.
@@ -46,7 +48,7 @@ public extension FileWatcher {
          - parameter url:             URL to observe.
          - parameter refreshInterval: Minimal refresh interval between queries.
          */
-        public init(url: NSURL, refreshInterval: NSTimeInterval = 1) {
+        public init(url: URL, refreshInterval: TimeInterval = 1) {
             self.url = url
             self.refreshInterval = refreshInterval
         }
@@ -55,12 +57,12 @@ public extension FileWatcher {
             _ = try? stop()
         }
         
-        public func start(closure: FileWatcher.UpdateClosure) throws {
+        public func start(_ closure: FileWatcher.UpdateClosure) throws {
             guard case .stopped = state else {
-                throw FileWatcher.Error.alreadyStarted
+                throw FileWatcher.FWError.alreadyStarted
             }
             
-            let timer = NSTimer.scheduledTimerWithTimeInterval(refreshInterval, target: self, selector: #selector(refresh), userInfo: nil, repeats: true)
+            let timer = Timer.scheduledTimer(timeInterval: refreshInterval, target: self, selector: #selector(refresh), userInfo: nil, repeats: true)
             state = .started(sessionHandler: URLSessionHandler(url: url, sessionConfiguration: FileWatcher.Remote.sessionConfiguration, callback: closure), timer: timer)
             
             timer.fire()
@@ -78,7 +80,7 @@ public extension FileWatcher {
          - throws: `FileWatcher.Error.notStarted`
          */
         @objc public func refresh() throws {
-            guard case let .started(handler, _) = state else { throw Error.notStarted }
+            guard case let .started(handler, _) = state else { throw FWError.notStarted }
             handler.refresh()
         }
     }
@@ -86,26 +88,26 @@ public extension FileWatcher {
 
 extension FileWatcher.Remote {
     
-    private final class URLSessionHandler: NSObject, NSURLSessionDelegate, NSURLSessionDownloadDelegate {
-        private var task: NSURLSessionDownloadTask? = nil
-        private var lastModified: String = ""
-        private var lastETag: String = ""
+    fileprivate final class URLSessionHandler: NSObject, URLSessionDelegate, URLSessionDownloadDelegate {
+        fileprivate var task: URLSessionDownloadTask? = nil
+        fileprivate var lastModified: String = ""
+        fileprivate var lastETag: String = ""
         
-        private let callback: FileWatcher.UpdateClosure
-        private let url: NSURL
-        private lazy var session: NSURLSession = {
-            return NSURLSession(configuration: self.sessionConfiguration, delegate: self, delegateQueue: self.processingQueue)
+        fileprivate let callback: FileWatcher.UpdateClosure
+        fileprivate let url: URL
+        fileprivate lazy var session: URLSession = {
+            return URLSession(configuration: self.sessionConfiguration, delegate: self, delegateQueue: self.processingQueue)
         }()
         
-        private let processingQueue: NSOperationQueue = {
-            let queue = NSOperationQueue()
+        fileprivate let processingQueue: OperationQueue = {
+            let queue = OperationQueue()
             queue.maxConcurrentOperationCount = 1
             return queue
         }()
         
-        private let sessionConfiguration: NSURLSessionConfiguration
+        fileprivate let sessionConfiguration: URLSessionConfiguration
         
-        init(url: NSURL, sessionConfiguration: NSURLSessionConfiguration, callback: FileWatcher.UpdateClosure) {
+        init(url: URL, sessionConfiguration: URLSessionConfiguration, callback: FileWatcher.UpdateClosure) {
             self.url = url
             self.sessionConfiguration = sessionConfiguration
             self.callback = callback
@@ -117,20 +119,20 @@ extension FileWatcher.Remote {
         }
         
         func refresh() {
-            processingQueue.addOperationWithBlock { [weak self] in
+            processingQueue.addOperation { [weak self] in
                 guard let strongSelf = self else { return }
                 
-                let request = NSMutableURLRequest(URL: strongSelf.url)
+                var request = URLRequest(url: strongSelf.url)
                 request.setValue(strongSelf.lastModified, forHTTPHeaderField: Constants.IfModifiedSinceKey)
                 request.setValue(strongSelf.lastETag, forHTTPHeaderField: Constants.IfNoneMatchKey)
             
-                strongSelf.task = strongSelf.session.downloadTaskWithRequest(request)
+                strongSelf.task = strongSelf.session.downloadTask(with: request)
                 strongSelf.task?.resume()
             }
         }
         
-        @objc func URLSession(session: NSURLSession, downloadTask: NSURLSessionDownloadTask, didFinishDownloadingToURL location: NSURL) {
-            guard let response = downloadTask.response as? NSHTTPURLResponse else {
+        @objc func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+            guard let response = downloadTask.response as? HTTPURLResponse else {
                 assertionFailure("expected NSHTTPURLResponse received \(downloadTask.response)")
                 task = nil
                 return
@@ -150,7 +152,7 @@ extension FileWatcher.Remote {
                 lastETag = etag
             }
             
-            guard let data = NSData(contentsOfURL: location) else {
+            guard let data = try? Data(contentsOf: location) else {
                 assertionFailure("can't load data from URL \(location)")
                 return
             }

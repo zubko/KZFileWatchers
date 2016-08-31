@@ -13,7 +13,7 @@ public enum FileWatcher {
     /**
      Errors that can be thrown from `FileWatcherProtocol`.
      */
-    public enum Error: ErrorType {
+    public enum FWError: Error {
         
         /**
          Trying to perform operation on watcher that requires started state.
@@ -48,7 +48,7 @@ public enum FileWatcher {
         /**
          Watched file did change.
          */
-        case updated(data: NSData)
+        case updated(data: Data)
     }
     
     /// Closure used for File watcher updates.
@@ -66,7 +66,7 @@ public protocol FileWatcherProtocol {
      
      - throws: `FileWatcher.Error`
      */
-    func start(closure: FileWatcher.UpdateClosure) throws
+    func start(_ closure: FileWatcher.UpdateClosure) throws
     
     /**
      Stops observing file changes.

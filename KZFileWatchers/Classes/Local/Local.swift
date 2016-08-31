@@ -14,21 +14,21 @@ public extension FileWatcher {
      Watcher for local files, it uses content diffing.
      */
     public final class Local: FileWatcherProtocol {
-        private typealias CancelBlock = () -> Void
+        fileprivate typealias CancelBlock = () -> Void
 
-        private enum State {
-            case Started(source: dispatch_source_t, fileHandle: CInt, callback: FileWatcher.UpdateClosure, cancel: CancelBlock)
-            case Stopped
+        fileprivate enum State {
+            case started(source: DispatchSource, fileHandle: CInt, callback: FileWatcher.UpdateClosure, cancel: CancelBlock)
+            case stopped
         }
 
-        private let path: String
-        private let refreshInterval: NSTimeInterval
-        private let queue: dispatch_queue_t
+        fileprivate let path: String
+        fileprivate let refreshInterval: TimeInterval
+        fileprivate let queue: DispatchQueue
 
-        private var state: State = .Stopped
-        private var isProcessing: Bool = false
-        private var cancelReload: CancelBlock?
-        private var previousContent: NSData?
+        fileprivate var state: State = .stopped
+        fileprivate var isProcessing: Bool = false
+        fileprivate var cancelReload: CancelBlock?
+        fileprivate var previousContent: Data?
 
         /**
          Initializes watcher to specified path.
@@ -39,7 +39,7 @@ public extension FileWatcher {
 
          - note: By default it throttles to 60 FPS, some editors can generate stupid multiple saves that mess with file system e.g. Sublime with AutoSave plugin is a mess and generates different file sizes, this will limit wasted time trying to load faster than 60 FPS, and no one should even notice it's throttled.
          */
-        public init(path: String, refreshInterval: NSTimeInterval = 1/60, queue: dispatch_queue_t = dispatch_get_main_queue()) {
+        public init(path: String, refreshInterval: TimeInterval = 1/60, queue: DispatchQueue = DispatchQueue.main) {
             self.path = path
             self.refreshInterval = refreshInterval
             self.queue = queue
@@ -50,8 +50,8 @@ public extension FileWatcher {
 
          - throws: FileWatcher.Error
          */
-        public func start(closure: FileWatcher.UpdateClosure) throws {
-            guard case .Stopped = state else { throw Error.alreadyStarted }
+        public func start(_ closure: FileWatcher.UpdateClosure) throws {
+            guard case .stopped = state else { throw FWError.alreadyStarted }
             try startObserving(closure)
         }
 
@@ -59,41 +59,39 @@ public extension FileWatcher {
          Stops observing file changes.
          */
         public func stop() throws {
-            guard case let .Started(_, _, _, cancel) = state else { throw Error.alreadyStopped }
+            guard case let .started(_, _, _, cancel) = state else { throw FWError.alreadyStopped }
             cancelReload?()
             cancelReload = nil
             cancel()
 
             isProcessing = false
-            state = .Stopped
+            state = .stopped
         }
 
         deinit {
-            if case .Started = state {
+            if case .started = state {
                 _ = try? stop()
             }
         }
 
-        private func startObserving(closure: FileWatcher.UpdateClosure) throws {
+        fileprivate func startObserving(_ closure: FileWatcher.UpdateClosure) throws {
             let handle = open(path, O_EVTONLY)
 
             if handle == -1 {
-                throw Error.failedToStart(reason: "Failed to open file")
+                throw FWError.failedToStart(reason: "Failed to open file")
             }
 
-            let source = dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE,
-                                                UInt(handle),
-                                                UInt(DISPATCH_VNODE_DELETE | DISPATCH_VNODE_WRITE | DISPATCH_VNODE_EXTEND | DISPATCH_VNODE_ATTRIB | DISPATCH_VNODE_LINK | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_REVOKE),
-                                                queue)
+            let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: handle, eventMask: [DispatchSource.FileSystemEvent.delete, DispatchSource.FileSystemEvent.write, DispatchSource.FileSystemEvent.extend, DispatchSource.FileSystemEvent.attrib, DispatchSource.FileSystemEvent.link, DispatchSource.FileSystemEvent.rename, DispatchSource.FileSystemEvent.revoke], queue: queue)
 
             let cancelBlock = {
-                dispatch_source_cancel(source)
+                source.cancel()
             }
 
-            dispatch_source_set_event_handler(source) {
-                let flags = dispatch_source_get_data(source)
+            source.setEventHandler {
+                let flags = source.data
 
-                if flags & DISPATCH_VNODE_DELETE == DISPATCH_VNODE_DELETE || flags & DISPATCH_VNODE_RENAME == DISPATCH_VNODE_RENAME {
+                if flags.contains(DispatchSource.FileSystemEvent.delete) ||
+                    flags.contains(DispatchSource.FileSystemEvent.rename) {
                     _ = try? self.stop()
                     _ = try? self.startObserving(closure)
                     return
@@ -102,18 +100,18 @@ public extension FileWatcher {
                 self.needsToReload()
             }
 
-            dispatch_source_set_cancel_handler(source) {
+            source.setCancelHandler {
                 close(handle)
             }
 
-            dispatch_resume(source)
+            source.resume()
 
-            state = .Started(source: source, fileHandle: handle, callback: closure, cancel: cancelBlock)
+            state = .started(source: source as! DispatchSource, fileHandle: handle, callback: closure, cancel: cancelBlock)
             refresh()
         }
 
-        private func needsToReload() {
-            guard case .Started = state else { return }
+        fileprivate func needsToReload() {
+            guard case .started = state else { return }
 
             cancelReload?()
             cancelReload = throttle(after: refreshInterval) { self.refresh() }
@@ -123,21 +121,21 @@ public extension FileWatcher {
          Force refresh, can only be used if the watcher was started and it's not processing.
          */
         public func refresh() {
-            guard case let .Started(_, _, closure, _) = state where isProcessing == false else { return }
+            guard case let .started(_, _, closure, _) = state , isProcessing == false else { return }
             isProcessing = true
 
-            guard let content = try? NSData(contentsOfFile: path, options: .DataReadingUncached) else {
+            guard let content = try? Data(contentsOf: URL(fileURLWithPath: path), options: .uncached) else {
                 isProcessing = false
                 return
             }
 
             if content != previousContent {
                 previousContent = content
-                dispatch_async(queue) {
+                queue.async {
                     closure(.updated(data: content))
                 }
             } else {
-                dispatch_async(queue) {
+                queue.async {
                     closure(.noChanges)
                 }
             }
@@ -146,9 +144,9 @@ public extension FileWatcher {
             cancelReload = nil
         }
 
-        private func throttle(after after: Double, action: () -> Void) -> CancelBlock {
+        fileprivate func throttle(after: Double, action: @escaping () -> Void) -> CancelBlock {
             var isCancelled = false
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, Int64(after * Double(NSEC_PER_SEC))), dispatch_get_main_queue()) {
+            DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + Double(Int64(after * Double(NSEC_PER_SEC))) / Double(NSEC_PER_SEC)) {
                 if !isCancelled {
                     action()
                 }
@@ -173,7 +171,7 @@ public extension FileWatcher.Local {
      */
     public class func simulatorOwnerUsername() -> String {
         //! running on simulator so just grab the name from home dir /Users/{username}/Library...
-        let usernameComponents = NSHomeDirectory().componentsSeparatedByString("/")
+        let usernameComponents = NSHomeDirectory().components(separatedBy: "/")
         guard usernameComponents.count > 2 else { fatalError() }
         return usernameComponents[2]
     }
